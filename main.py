@@ -192,12 +192,33 @@ def write_manifest(repo, version, artifact_dir, outputs, mode):
             "commit" : commit,
             "branch" : branch
         },
+        "submodules" : get_submodules(repo),
         "artifacts": artifacts
     }
 
     (artifact_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2)
     )
+    
+def get_submodules(repo):
+    result = run(
+        ["git", "submodule", "status"],
+        repo,
+        capture_output=True
+    )
+
+    submodules = {}
+    for line in result.stdout.splitlines():
+        # ex: 3f42c9179a1bbbd7d7a0e1d2e0d0f7e3c92e4b1f comms/tests (heads/main)
+        line = line.strip()
+        if not line:
+            continue
+
+        commit, path, *_ = line.split()
+        commit = commit.lstrip("-+")  # handle init/dirty markers
+        submodules[path] = commit
+
+    return submodules
 
 def build(repo, cfg, dest):
     # build a repo and store output artifacts in dest
@@ -308,6 +329,47 @@ def init_submodules(repos):
             git(repo, "submodule", "update", "--init", "--recursive")
         except subprocess.CalledProcessError:
             print(f"[init-submodules] No submodules found in {repo}, skipping.")
+            
+def add_submodule(parent_repo, source_repo, mount_path):
+    if not (parent_repo / ".git").exists():
+        raise WMException(f"{parent_repo} is not a git repo")
+
+    if not (source_repo / ".git").exists():
+        raise WMException(f"{source_repo} is not a git repo")
+
+    full_mount = parent_repo / mount_path
+    if full_mount.exists():
+        raise WMException(f"Path already exists: {mount_path}")
+
+    # use local path for submodule
+    git(
+        parent_repo,
+        "submodule", "add", str(source_repo.resolve()), str(mount_path)
+    )
+
+    git(parent_repo, "commit", "-m", f"submodule: add {mount_path} -> {source_repo}")
+
+    print(f"[submodule-add] {parent_repo} ← {source_repo}")
+    
+def update_submodule(parent_repo, submodule_path, commit):
+    sub_path = parent_repo / submodule_path
+    if not sub_path.exists():
+        raise RuntimeError(f"Submodule not found: {submodule_path}")
+
+    # ensure submodule is initialised
+    git(parent_repo, "submodule", "update", "--init", str(submodule_path))
+
+    if commit:
+        git(sub_path, "checkout", commit)
+    else:
+        # update to latest on current branch
+        git(sub_path, "pull", "--ff-only")
+
+    # Record pointer change
+    git(parent_repo, "add", str(submodule_path))
+    git(parent_repo, "commit", "-m", f"submodule: update {submodule_path}")
+
+    print(f"[submodule-update] {parent_repo} → {submodule_path}")
 
 def commit_workspace_changes(ws_root):
     git(ws_root, "add", WS_CONFIG_FILE)
@@ -544,15 +606,19 @@ def main():
         case "super-sync":
             for repo in find_repos(args, ws_config):
                 sync_to_super(repo, ws_root)
-        case "init-submodules":
-            repos = find_repos(args if args else ["."], ws_config)
-            init_submodules(repos)
         case "super-commit":
             commit_workspace_changes(ws_root)
         case "super-push":
             push_super_repo(ws_root)
         case "super-pull":
             pull_super_repo(ws_root)
+        case "submodule-init":
+            repos = find_repos(args if args else ["."], ws_config)
+            init_submodules(repos)
+        case "submodule-add":
+            add_submodule(find_repos(args[0], ws_config)[0], find_repos(args[1], ws_config)[0], args[2])
+        case "submodule-update":
+            update_submodule(find_repos(args[0], ws_config)[0], args[1], args[2] if len(args) > 2 else None)
         case "mark-bin":
             repos = find_repos(args, ws_config)
             mark_binary(repos, ws_root)
