@@ -124,10 +124,7 @@ def latest_version(repo):
         text=True
     ).splitlines()
     
-    versions = []
-    for t in tags:
-        if SEMVER.match(t) or HOTFIX.match(t):
-            versions.append(t)
+    versions = [t for t in tags if SEMVER.match(t) or HOTFIX.match(t)]
             
     return sorted(versions)[-1] if versions else "v0.0.0"
 
@@ -523,8 +520,9 @@ def switch_branch(branch, repo):
     if branch_exists(repo, branch):
         git(repo, "checkout", branch)
         print(f"[switch] {repo_key(repo)} → {branch}")
-    else:
-        raise WMException(f"{repo_key(repo)} (no {branch})")
+        return
+        
+    raise WMException(f"{repo_key(repo)} (no {branch})")
     
 def list_current_branch(repos):
     for repo in repos:
@@ -613,7 +611,7 @@ def main():
         case "super-pull":
             pull_super_repo(ws_root)
         case "submodule-init":
-            repos = find_repos(args if args else ["."], ws_config)
+            repos = find_repos(args or ["."], ws_config)
             init_submodules(repos)
         case "submodule-add":
             add_submodule(find_repos(args[0], ws_config)[0], find_repos(args[1], ws_config)[0], args[2])
